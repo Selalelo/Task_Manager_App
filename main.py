@@ -1,6 +1,7 @@
 # main_app.py
 
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from salary_service import salary_predictor, competitiveness_analyzer, initialize_salary_predictor
 import os
 import requests
 import json
@@ -365,6 +366,8 @@ def change_password():
             return redirect(url_for('project_manager_dashboard'))
         elif role == 'admin':
             return redirect(url_for('admin_dashboard'))
+        elif role == 'human_resource':  
+            return redirect(url_for('human_resource_dashboard'))
         else:
             return redirect(url_for('hr_dashboard'))
     
@@ -771,14 +774,63 @@ def approve_task():
 
 
 
-
-
-
-@app.route('/hr_dashboard')
-def hr_dashboard():
+@app.route('/human_resource_dashboard')
+def human_resource_dashboard():
     if 'emp_id' not in session or session['role'] != 'human resource':
+        flash('Access restricted to HR personnel', 'danger')
         return redirect(url_for('index'))
-    return render_template('hr_dashboard.html', employee=session)
+    
+    # Get employee data
+    employee_data = get_employee(session['emp_id'])
+    
+    # Get all employees
+    employees = get_all_employees()
+    
+    # Calculate HR stats
+    hr_stats = {
+        'total_employees': len(employees),
+        'tech_employees': len([e for e in employees if e.get('role') and (
+            'developer' in e['role'].lower() or 
+            'engineer' in e['role'].lower() or
+            'data' in e['role'].lower()
+        )]),
+        'avg_success_rate': sum(e.get('success_rate', 0) for e in employees) / len(employees) if employees else 0,
+        'recent_hires': len([e for e in employees if e.get('hire_date') and 
+                            (datetime.now() - datetime.strptime(e['hire_date'], '%Y-%m-%d')).days <= 30]),
+        'role_distribution': {},
+        'top_performers': sorted(
+            [e for e in employees if e.get('success_rate', 0) > 0],
+            key=lambda x: x.get('success_rate', 0),
+            reverse=True
+        )[:5]
+    }
+    
+    # Count roles
+    for employee in employees:
+        role = employee.get('role', 'Unknown')
+        hr_stats['role_distribution'][role] = hr_stats['role_distribution'].get(role, 0) + 1
+    
+    # Common job titles and locations for the form
+    common_job_titles = [
+        "data scientist", "data analyst", "software developer", 
+        "software engineer", "devops engineer", "machine learning engineer",
+        "product manager", "ui/ux designer", "backend developer",
+        "full stack developer", "frontend developer"
+    ]
+    
+    common_locations = ["cape town", "johannesburg", "durban", "pretoria"]
+    experience_levels = ["LESS_THAN_ONE", "ONE_TO_THREE", "FOUR_TO_SIX", "SEVEN_TO_NINE", "TEN_PLUS"]
+    
+    return render_template(
+        'human_resource_dashboard.html',
+        employee=employee_data,  # Pass employee data to template
+        employees=employees,
+        hr_stats=hr_stats,
+        job_titles=common_job_titles,
+        locations=common_locations,
+        experience_levels=experience_levels
+    )
+
 
 @app.route('/admin/create_employee', methods=['GET', 'POST'])
 def create_employee():
@@ -1288,6 +1340,90 @@ def get_all_tasks():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@app.route('/salary_estimator')
+def salary_estimator():
+    """Salary estimation page for HR"""
+    if 'emp_id' not in session or session['role'] != 'human resource':
+        flash('Access restricted to HR personnel', 'danger')
+        return redirect(url_for('index'))
+    
+    # Common job titles and locations for the form
+    common_job_titles = [
+        "data scientist", "data analyst", "software developer", 
+        "software engineer", "devops engineer", "machine learning engineer",
+        "product manager", "ui/ux designer", "backend developer",
+        "full stack developer", "frontend developer"
+    ]
+    
+    common_locations = ["cape town", "johannesburg", "durban", "pretoria"]
+    experience_levels = ["LESS_THAN_ONE", "ONE_TO_THREE", "FOUR_TO_SIX", "SEVEN_TO_NINE", "TEN_PLUS"]
+    
+    return render_template(
+        'salary_estimator.html',
+        job_titles=common_job_titles,
+        locations=common_locations,
+        experience_levels=experience_levels
+    )
+
+@app.route('/api/estimate_salary', methods=['POST'])
+def api_estimate_salary():
+    """API endpoint for salary estimation"""
+    if 'emp_id' not in session or session['role'] != 'human resource':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        data = request.json
+        job_title = data.get('job_title')
+        location = data.get('location')
+        experience_level = data.get('experience_level')
+        budget = data.get('budget')
+        
+        if not all([job_title, location, experience_level]):
+            return jsonify({'success': False, 'error': 'Missing required parameters'}), 400
+        
+        # Get salary prediction
+        prediction = salary_predictor.predict_salary(job_title, location, experience_level)
+        
+        result = {
+            'success': True,
+            'prediction': prediction
+        }
+        
+        # Add competitiveness analysis if budget is provided
+        if budget:
+            try:
+                budget = float(budget)
+                analysis = competitiveness_analyzer.analyze_competitiveness(
+                    prediction['predicted_annual_salary'],
+                    prediction['predicted_range'],
+                    budget
+                )
+                result['competitiveness_analysis'] = analysis
+            except ValueError:
+                # If budget is not a valid number, skip the analysis
+                pass
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/retrain_salary_model', methods=['POST'])
+def api_retrain_salary_model():
+    """API endpoint to retrain the salary prediction model"""
+    if 'emp_id' not in session or session['role'] != 'human resource':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        success = initialize_salary_predictor()
+        if success:
+            return jsonify({'success': True, 'message': 'Salary model retrained successfully'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to retrain model'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Add a jinja template filter for formatting dates
 @app.template_filter('datetime')
